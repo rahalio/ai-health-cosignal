@@ -1,0 +1,1905 @@
+openapi: 3.0.3
+info:
+  title: Cosignal
+  version: 0.1.0
+  description: >-
+    Care-team disposition layer for clinical AI. Producers submit drafts — notes,
+    order proposals, dose findings, triage dispositions, inbox replies — which never
+    reach the patient record until a named clinician with the licence and
+    credentialed scope accepts, edits, rejects, or escalates them. Edits, overrides,
+    interruption load, and returned minutes are captured from the same disposition
+    stream and reconciled to scheduling and payroll.
+  x-product-slug: ai-health-cosignal
+  x-source: ai-in-health/Accenture-Health-Artificial-Intelligence/
+servers:
+  - url: https://api.example.com
+tags:
+  - name: Care Team
+    description: Members, licences, credentialed scopes, supervision, and work sessions
+  - name: Draft Queue
+    description: Draft intake, evidence traces, routing, and deferral
+  - name: Dispositions
+    description: Accept, edit, reject, escalate, with edit deltas and unsafe flags
+  - name: Co-signature Policy
+    description: Per draft type rules, thresholds, and interruption budgets
+  - name: Medication and Order Safety
+    description: Dose findings and order proposals requiring prescriber signature
+  - name: Documentation Attestation
+    description: Review evidence, provenance, and billing-level support
+  - name: Workload Ledger
+    description: Minutes returned by role, reconciled and netted across roles
+  - name: Safety Surveillance
+    description: Unsafe rejections, harm linkage, and device surveillance records
+paths:
+  /v1/care-team/members:
+    get:
+      operationId: listCareTeamMembers
+      tags: [Care Team]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: role
+          in: query
+          schema:
+            $ref: "#/components/schemas/CareRole"
+        - name: unitId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Care team members page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeCareTeamMember"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/care-team/members/{memberId}/scope:
+    parameters:
+      - $ref: "#/components/parameters/MemberId"
+    get:
+      operationId: getScopeCredential
+      tags: [Care Team]
+      description: >-
+        Licence, jurisdiction, credentialed scope, and supervision relationships
+        resolved live rather than cached from onboarding.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Scope credential
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeScopeCredential"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/care-team/work-sessions:
+    post:
+      operationId: openWorkSession
+      tags: [Care Team]
+      description: >-
+        Starts a shift or clinic session, establishing the interruption budget and
+        the scheduled minutes against which returned time is later reconciled.
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkSessionCreate"
+      responses:
+        "201":
+          description: Work session opened
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeWorkSession"
+  /v1/producers:
+    get:
+      operationId: listProducerRegistrations
+      tags: [Draft Queue]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Registered draft producers with model versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeProducerRegistration"
+    post:
+      operationId: registerProducer
+      tags: [Draft Queue]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProducerRegistration"
+      responses:
+        "201":
+          description: Producer registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeProducerRegistration"
+  /v1/drafts:
+    get:
+      operationId: listDraftArtifacts
+      tags: [Draft Queue]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: assignedToMemberId
+          in: query
+          schema:
+            type: string
+        - name: draftType
+          in: query
+          schema:
+            $ref: "#/components/schemas/DraftType"
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [queued, deferred, delivered, opened, dispositioned, suppressed, expired]
+        - name: ageOverMinutes
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Draft queue page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeDraftArtifact"
+    post:
+      operationId: submitDraftArtifact
+      tags: [Draft Queue]
+      description: >-
+        Producers submit here instead of writing to the record. The draft must carry
+        its model version and an evidence trace for each clinical claim it asserts.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftArtifactCreate"
+      responses:
+        "201":
+          description: Draft accepted into the queue and routed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDraftArtifact"
+        "422":
+          description: Evidence trace or model version missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "423":
+          description: Draft type currently suppressed by override threshold breach
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/drafts/{draftId}:
+    parameters:
+      - $ref: "#/components/parameters/DraftId"
+    get:
+      operationId: getDraftArtifact
+      tags: [Draft Queue]
+      description: >-
+        Marks the draft as opened, which is the review evidence later used for
+        attestation and billing-level support.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Draft with evidence trace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDraftArtifact"
+        "403":
+          description: Caller's role or scope may not dispose of this draft type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/drafts/{draftId}/reassignment:
+    parameters:
+      - $ref: "#/components/parameters/DraftId"
+    post:
+      operationId: reassignDraftArtifact
+      tags: [Draft Queue]
+      description: >-
+        Moves a draft to another permitted role, recording the transfer so that time
+        credited to one role is netted against time added to another.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [toMemberId, reason]
+              properties:
+                toMemberId:
+                  type: string
+                reason:
+                  type: string
+                  enum: [interruption_budget_exceeded, scope_mismatch, shift_ended, workload_balancing, escalation]
+                note:
+                  type: string
+      responses:
+        "200":
+          description: Draft reassigned and transfer recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDraftArtifact"
+  /v1/dispositions:
+    get:
+      operationId: listDispositionRecords
+      tags: [Dispositions]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: draftType
+          in: query
+          schema:
+            $ref: "#/components/schemas/DraftType"
+        - name: action
+          in: query
+          schema:
+            $ref: "#/components/schemas/DispositionAction"
+        - name: memberId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dispositions page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeDispositionRecord"
+    post:
+      operationId: recordDisposition
+      tags: [Dispositions]
+      description: >-
+        The only path from a draft into the patient record. Records the action, the
+        named clinician, the scope that permitted it, and the edit delta.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DispositionRecordCreate"
+      responses:
+        "201":
+          description: Disposition recorded and artefact released to the record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDispositionRecord"
+        "403":
+          description: Role, licence, or supervision status does not permit this disposition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Draft already dispositioned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/dispositions/{dispositionId}/edit-delta:
+    parameters:
+      - $ref: "#/components/parameters/DispositionId"
+    get:
+      operationId: getEditDelta
+      tags: [Dispositions]
+      description: >-
+        What changed between draft and final artefact, at the level of the specific
+        claim or instruction altered.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Edit delta
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeEditDelta"
+  /v1/drafts/{draftId}/unsafe-rejections:
+    parameters:
+      - $ref: "#/components/parameters/DraftId"
+    post:
+      operationId: rejectDraftAsUnsafe
+      tags: [Dispositions]
+      description: >-
+        Single-step rejection with a reason. Patterns open a review with a named
+        owner and feed both model change control and the safety event system.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rejectedBy, reason]
+              properties:
+                rejectedBy:
+                  type: string
+                reason:
+                  type: string
+                  enum:
+                    - factually_wrong_about_patient
+                    - clinically_unsafe_recommendation
+                    - wrong_patient
+                    - missing_critical_context
+                    - outside_my_scope
+                    - sensitive_content_should_not_be_here
+                    - fabricated_content
+                narrative:
+                  type: string
+      responses:
+        "201":
+          description: Unsafe rejection recorded and review opened
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeSafetySurveillanceRecord"
+  /v1/dispositions/{dispositionId}/escalations:
+    parameters:
+      - $ref: "#/components/parameters/DispositionId"
+    post:
+      operationId: escalateDisposition
+      tags: [Dispositions]
+      description: >-
+        Escalation always lands on a named owner with a clock; an unclaimed handoff
+        is detected rather than lost.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EscalationHandoffCreate"
+      responses:
+        "201":
+          description: Escalation assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeEscalationHandoff"
+  /v1/co-signature-rules:
+    get:
+      operationId: listCoSignatureRules
+      tags: [Co-signature Policy]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Co-signature rules per draft type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeCoSignatureRule"
+    put:
+      operationId: setCoSignatureRule
+      tags: [Co-signature Policy]
+      description: >-
+        Governance-owned. States which roles may dispose of a draft type, what
+        supervision applies, and what may never be auto-released.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CoSignatureRule"
+      responses:
+        "200":
+          description: Rule set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeCoSignatureRule"
+        "403":
+          description: Only clinical governance may relax a co-signature rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/co-signature-rules/{draftType}/override-threshold:
+    parameters:
+      - name: draftType
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/DraftType"
+    put:
+      operationId: setOverrideThreshold
+      tags: [Co-signature Policy]
+      description: >-
+        Override and rejection rate above which the draft type is automatically
+        suppressed pending review.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OverrideThreshold"
+      responses:
+        "200":
+          description: Threshold set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeOverrideThreshold"
+  /v1/interruption-budgets:
+    put:
+      operationId: setInterruptionBudget
+      tags: [Co-signature Policy]
+      description: >-
+        Maximum drafts delivered per clinician-hour by role and setting. Drafts over
+        budget are deferred, batched, or reassigned rather than delivered.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterruptionBudget"
+      responses:
+        "200":
+          description: Budget set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeInterruptionBudget"
+  /v1/medication-safety/dose-findings:
+    get:
+      operationId: listDoseCheckFindings
+      tags: [Medication and Order Safety]
+      description: >-
+        Findings routed into pharmacist scope with the renal function, weight, and
+        current regimen needed to act rather than investigate.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [informational, moderate, severe, contraindicated]
+      responses:
+        "200":
+          description: Dose findings page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeDoseCheckFinding"
+    post:
+      operationId: submitDoseCheckFinding
+      tags: [Medication and Order Safety]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DoseCheckFinding"
+      responses:
+        "201":
+          description: Finding queued to a pharmacist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDoseCheckFinding"
+  /v1/medication-safety/order-proposals/{proposalId}/signature:
+    parameters:
+      - name: proposalId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: signOrderProposal
+      tags: [Medication and Order Safety]
+      description: >-
+        An order proposal becomes an order only here. Release without an authorised
+        prescriber signature is blocked and recorded as an exception.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prescriberId, attestation]
+              properties:
+                prescriberId:
+                  type: string
+                attestation:
+                  type: string
+                  enum: [reviewed_and_ordered, reviewed_and_modified, reviewed_and_declined]
+                modifications:
+                  type: string
+                supervisingPrescriberId:
+                  type: string
+      responses:
+        "200":
+          description: Order signed and released
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeOrderProposal"
+        "403":
+          description: Caller is not an authorised prescriber for this order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/documentation/attestations:
+    post:
+      operationId: recordDocumentationAttestation
+      tags: [Documentation Attestation]
+      description: >-
+        Records whether the signing clinician actually opened and reviewed the draft,
+        and which portion was machine-drafted versus clinician-authored.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentationAttestationCreate"
+      responses:
+        "201":
+          description: Attestation recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDocumentationAttestation"
+        "422":
+          description: Draft was never opened, attestation cannot support a billing level
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /v1/documentation/attestations/{attestationId}:
+    parameters:
+      - name: attestationId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getDocumentationAttestation
+      tags: [Documentation Attestation]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Attestation with review evidence and provenance split
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeDocumentationAttestation"
+  /v1/workload/time-returned:
+    get:
+      operationId: listTimeReturnedLedger
+      tags: [Workload Ledger]
+      description: >-
+        Minutes returned by role, reconciled to scheduling and payroll, with role
+        transfers netted and conversion into direct care or after-hours reduction
+        stated.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: period
+          in: query
+          schema:
+            type: string
+            example: 2026-W36
+        - name: role
+          in: query
+          schema:
+            $ref: "#/components/schemas/CareRole"
+        - name: unitId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Time returned ledger page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeTimeReturnedLedgerEntry"
+  /v1/workload/time-returned/reconciliation:
+    post:
+      operationId: reconcileTimeReturned
+      tags: [Workload Ledger]
+      description: >-
+        Submits scheduling and payroll actuals so that a returned-minutes claim is
+        reconciled before it is reported.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period, role, scheduledMinutes]
+              properties:
+                period:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/CareRole"
+                unitId:
+                  type: string
+                scheduledMinutes:
+                  type: integer
+                paidMinutes:
+                  type: integer
+                afterHoursRecordMinutes:
+                  type: integer
+                sourceSystem:
+                  type: string
+      responses:
+        "200":
+          description: Reconciliation applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeTimeReturnedLedgerEntry"
+  /v1/workload/queue-age-incidents:
+    get:
+      operationId: listQueueAgeIncidents
+      tags: [Workload Ledger]
+      description: >-
+        Draft backlogs past their governance bound, raised as safety incidents rather
+        than reported as productivity statistics.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Queue age incidents page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeSafetySurveillanceRecord"
+  /v1/surveillance/records:
+    get:
+      operationId: listSafetySurveillanceRecords
+      tags: [Safety Surveillance]
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: origin
+          in: query
+          schema:
+            type: string
+            enum: [unsafe_rejection, harm_event, override_threshold_breach, queue_age_breach, signature_bypass_attempt]
+        - name: reportableOnly
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Surveillance records page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEnvelopeSafetySurveillanceRecord"
+  /v1/surveillance/records/{recordId}/harm-linkage:
+    parameters:
+      - name: recordId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: linkHarmEvent
+      tags: [Safety Surveillance]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [safetyEventRef, harmLevel]
+              properties:
+                safetyEventRef:
+                  type: string
+                harmLevel:
+                  type: string
+                  enum: [no_harm, near_miss, temporary_harm, permanent_harm, death]
+                linkStrength:
+                  type: string
+                  enum: [suspected, plausible, probable, confirmed, ruled_out]
+                narrative:
+                  type: string
+      responses:
+        "201":
+          description: Harm event linked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeSafetySurveillanceRecord"
+  /v1/surveillance/device-packages:
+    get:
+      operationId: getDeviceSurveillancePackage
+      tags: [Safety Surveillance]
+      description: >-
+        Assembles dispositions, unsafe rejections, and harm linkage into the
+        post-market record a device classification requires, without a manual process.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: producerId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: period
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Device surveillance package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeSafetySurveillanceRecord"
+  /v1/corpus/use-basis:
+    put:
+      operationId: setDispositionCorpusUseBasis
+      tags: [Safety Surveillance]
+      description: >-
+        Gates use of draft-and-disposition pairs for model improvement. Withdrawing
+        the basis withdraws the corpus, and clinicians are told their edits train it.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [basis, clinicianNoticeGiven]
+              properties:
+                basis:
+                  type: string
+                  enum: [quality_improvement, research_protocol, vendor_agreement, withdrawn]
+                agreementReference:
+                  type: string
+                boundaryConstraint:
+                  type: string
+                  enum: [buyer_tenant_only, vendor_environment_permitted, neutral_enclave]
+                clinicianNoticeGiven:
+                  type: boolean
+                setBy:
+                  type: string
+      responses:
+        "200":
+          description: Corpus use basis recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataEnvelopeProducerRegistration"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      schema:
+        type: string
+    DraftId:
+      name: draftId
+      in: path
+      required: true
+      schema:
+        type: string
+    DispositionId:
+      name: dispositionId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableEntity:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    ResponseMeta:
+      type: object
+      required: [requestId, timestamp]
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+          example: USD
+    CareRole:
+      type: string
+      enum: [attending_physician, resident, advanced_practice_provider, registered_nurse, licensed_practical_nurse, clinical_pharmacist, medical_assistant, care_coordinator]
+    DraftType:
+      type: string
+      enum:
+        - progress_note
+        - discharge_summary
+        - discharge_instructions
+        - order_proposal
+        - prescription_proposal
+        - dose_check_finding
+        - triage_disposition
+        - inbox_reply
+        - prior_authorisation_packet
+        - care_gap_recommendation
+    DispositionAction:
+      type: string
+      enum: [accepted, edited, rejected, escalated, rejected_unsafe]
+    CareTeamMember:
+      type: object
+      required: [id, role]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/CareRole"
+        unitIds:
+          type: array
+          items:
+            type: string
+        activeSessionId:
+          type: string
+        interruptionBudgetPerHour:
+          type: integer
+        openDraftCount:
+          type: integer
+    ScopeCredential:
+      type: object
+      required: [memberId, role, licenceStatus]
+      properties:
+        memberId:
+          type: string
+        role:
+          $ref: "#/components/schemas/CareRole"
+        licenceStatus:
+          type: string
+          enum: [active, lapsed, restricted, pending]
+        licenceJurisdictions:
+          type: array
+          items:
+            type: string
+        prescriptiveAuthority:
+          type: boolean
+        controlledSubstanceAuthority:
+          type: boolean
+        credentialedSpecialties:
+          type: array
+          items:
+            type: string
+        supervisingMemberId:
+          type: string
+        supervisionRequiredForDraftTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftType"
+        resolvedAt:
+          type: string
+          format: date-time
+    WorkSession:
+      type: object
+      required: [id, memberId, startedAt]
+      properties:
+        id:
+          type: string
+        memberId:
+          type: string
+        unitId:
+          type: string
+        setting:
+          type: string
+          enum: [inpatient_unit, ambulatory_clinic, emergency_department, telehealth, pharmacy]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        scheduledMinutes:
+          type: integer
+        interruptionBudgetPerHour:
+          type: integer
+        draftsDelivered:
+          type: integer
+        draftsDeferred:
+          type: integer
+    WorkSessionCreate:
+      type: object
+      required: [memberId, startedAt]
+      properties:
+        memberId:
+          type: string
+        unitId:
+          type: string
+        setting:
+          type: string
+          enum: [inpatient_unit, ambulatory_clinic, emergency_department, telehealth, pharmacy]
+        startedAt:
+          type: string
+          format: date-time
+        scheduledMinutes:
+          type: integer
+    ProducerRegistration:
+      type: object
+      required: [id, name, draftTypes]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        vendor:
+          type: string
+        draftTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftType"
+        modelVersion:
+          $ref: "#/components/schemas/ModelVersion"
+        deviceClassification:
+          type: string
+          enum: [not_a_device, exempt_clinical_decision_support, cleared_device, under_review]
+        clearanceReference:
+          type: string
+        corpusUseBasis:
+          type: string
+          enum: [quality_improvement, research_protocol, vendor_agreement, withdrawn]
+        corpusBoundaryConstraint:
+          type: string
+          enum: [buyer_tenant_only, vendor_environment_permitted, neutral_enclave]
+        clinicianNoticeGiven:
+          type: boolean
+        suppressed:
+          type: boolean
+    ModelVersion:
+      type: object
+      required: [versionLabel]
+      properties:
+        versionLabel:
+          type: string
+        effectiveFrom:
+          type: string
+          format: date-time
+        changeType:
+          type: string
+          enum: [initial, retrain, prompt_change, threshold_change, vendor_upgrade]
+        changeControlReference:
+          type: string
+    EvidenceTrace:
+      type: object
+      required: [claims]
+      properties:
+        claims:
+          type: array
+          items:
+            type: object
+            properties:
+              claimText:
+                type: string
+              sourceType:
+                type: string
+                enum: [note, lab_result, vital_sign, medication_record, imaging_report, patient_utterance, problem_list, external_record]
+              sourceReference:
+                type: string
+              observedAt:
+                type: string
+                format: date-time
+              unsupported:
+                type: boolean
+                description: Flagged where the draft asserts something with no chart basis
+        unsupportedClaimCount:
+          type: integer
+    DraftArtifact:
+      type: object
+      required: [id, draftType, producerId, state, createdAt]
+      properties:
+        id:
+          type: string
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        producerId:
+          type: string
+        modelVersionLabel:
+          type: string
+        patientRef:
+          type: string
+          description: Pseudonymous patient key resolvable inside the covered-entity boundary
+        encounterRef:
+          type: string
+        unitId:
+          type: string
+        assignedToMemberId:
+          type: string
+        requiredRole:
+          $ref: "#/components/schemas/CareRole"
+        content:
+          type: string
+        evidenceTrace:
+          $ref: "#/components/schemas/EvidenceTrace"
+        sensitiveSegment:
+          type: string
+          enum: [none, behavioural_health, substance_use, reproductive, hiv, genetic]
+        state:
+          type: string
+          enum: [queued, deferred, delivered, opened, dispositioned, suppressed, expired]
+        createdAt:
+          type: string
+          format: date-time
+        deliveredAt:
+          type: string
+          format: date-time
+        openedAt:
+          type: string
+          format: date-time
+        deferredReason:
+          type: string
+          enum: [interruption_budget_exceeded, batching_window, shift_change, none]
+        ageMinutes:
+          type: integer
+        queueAgeBoundMinutes:
+          type: integer
+        transferHistory:
+          type: array
+          items:
+            type: object
+            properties:
+              fromMemberId:
+                type: string
+              toMemberId:
+                type: string
+              fromRole:
+                $ref: "#/components/schemas/CareRole"
+              toRole:
+                $ref: "#/components/schemas/CareRole"
+              reason:
+                type: string
+              at:
+                type: string
+                format: date-time
+    DraftArtifactCreate:
+      type: object
+      required: [draftType, producerId, modelVersionLabel, content, evidenceTrace]
+      properties:
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        producerId:
+          type: string
+        modelVersionLabel:
+          type: string
+        patientRef:
+          type: string
+        encounterRef:
+          type: string
+        unitId:
+          type: string
+        suggestedMemberId:
+          type: string
+        content:
+          type: string
+        evidenceTrace:
+          $ref: "#/components/schemas/EvidenceTrace"
+        sensitiveSegment:
+          type: string
+          enum: [none, behavioural_health, substance_use, reproductive, hiv, genetic]
+        estimatedMinutesSavedIfAccepted:
+          type: integer
+    CoSignatureRule:
+      type: object
+      required: [draftType, permittedRoles, autoReleaseProhibited]
+      properties:
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        permittedRoles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CareRole"
+        prescriberSignatureRequired:
+          type: boolean
+        supervisionRequiredForRoles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CareRole"
+        autoReleaseProhibited:
+          type: boolean
+          default: true
+        reviewEvidenceRequiredForAttestation:
+          type: boolean
+        queueAgeBoundMinutes:
+          type: integer
+        sensitiveSegmentsPermitted:
+          type: array
+          items:
+            type: string
+        ratifiedBy:
+          type: string
+        ratifiedAt:
+          type: string
+          format: date-time
+        expiresOn:
+          type: string
+          format: date
+    OverrideThreshold:
+      type: object
+      required: [draftType, maxOverrideRate]
+      properties:
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        unitId:
+          type: string
+        maxOverrideRate:
+          type: number
+          format: float
+        measurementWindowDays:
+          type: integer
+        currentOverrideRate:
+          type: number
+          format: float
+        breached:
+          type: boolean
+        autoSuppressOnBreach:
+          type: boolean
+          default: true
+        reviewOwnerId:
+          type: string
+        setBy:
+          type: string
+    InterruptionBudget:
+      type: object
+      required: [role, setting, maxDraftsPerHour]
+      properties:
+        role:
+          $ref: "#/components/schemas/CareRole"
+        setting:
+          type: string
+          enum: [inpatient_unit, ambulatory_clinic, emergency_department, telehealth, pharmacy]
+        maxDraftsPerHour:
+          type: integer
+        overflowBehaviour:
+          type: string
+          enum: [defer, batch, reassign, drop_low_severity]
+        batchingWindowMinutes:
+          type: integer
+        exemptDraftTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftType"
+        setBy:
+          type: string
+    DispositionRecordCreate:
+      type: object
+      required: [draftId, memberId, action]
+      properties:
+        draftId:
+          type: string
+        memberId:
+          type: string
+        action:
+          $ref: "#/components/schemas/DispositionAction"
+        finalContent:
+          type: string
+        reasonCode:
+          type: string
+        supervisingMemberId:
+          type: string
+        secondsSpentReviewing:
+          type: integer
+    DispositionRecord:
+      type: object
+      required: [id, draftId, memberId, action, dispositionedAt]
+      properties:
+        id:
+          type: string
+        draftId:
+          type: string
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        memberId:
+          type: string
+        memberRole:
+          $ref: "#/components/schemas/CareRole"
+        scopeCredentialSnapshot:
+          $ref: "#/components/schemas/ScopeCredential"
+        coSignatureRuleVersion:
+          type: string
+        action:
+          $ref: "#/components/schemas/DispositionAction"
+        supervisingMemberId:
+          type: string
+        dispositionedAt:
+          type: string
+          format: date-time
+        secondsSpentReviewing:
+          type: integer
+        draftOpenedBeforeDisposition:
+          type: boolean
+        editDelta:
+          $ref: "#/components/schemas/EditDelta"
+        releasedToRecord:
+          type: boolean
+        recordReference:
+          type: string
+        minutesReturnedCredited:
+          type: integer
+        creditedToRole:
+          $ref: "#/components/schemas/CareRole"
+    EditDelta:
+      type: object
+      properties:
+        dispositionId:
+          type: string
+        changedClaimCount:
+          type: integer
+        addedClaimCount:
+          type: integer
+        removedClaimCount:
+          type: integer
+        editMagnitude:
+          type: string
+          enum: [none, cosmetic, substantive, material_correction, rewritten]
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              claimText:
+                type: string
+              finalText:
+                type: string
+              changeClass:
+                type: string
+                enum: [wording, clinical_meaning, medication_detail, dose, laterality, timing, patient_identity, removed_unsupported_claim]
+        clinicallySignificantCorrection:
+          type: boolean
+    OrderProposal:
+      type: object
+      required: [id, draftId, orderType, status]
+      properties:
+        id:
+          type: string
+        draftId:
+          type: string
+        orderType:
+          type: string
+          enum: [medication, laboratory, imaging, referral, therapy, nursing_task]
+        orderDetail:
+          type: string
+        rxnormCode:
+          type: string
+        loincCode:
+          type: string
+        status:
+          type: string
+          enum: [proposed, signed, modified_and_signed, declined, blocked]
+        prescriberId:
+          type: string
+        supervisingPrescriberId:
+          type: string
+        signedAt:
+          type: string
+          format: date-time
+        releaseWithoutSignatureAttempted:
+          type: boolean
+        blockedReason:
+          type: string
+    DoseCheckFinding:
+      type: object
+      required: [id, patientRef, medication, severity]
+      properties:
+        id:
+          type: string
+        draftId:
+          type: string
+        patientRef:
+          type: string
+        medication:
+          type: string
+        rxnormCode:
+          type: string
+        findingType:
+          type: string
+          enum: [dose_above_range, dose_below_range, renal_adjustment_needed, hepatic_adjustment_needed, interaction, duplicate_therapy, allergy_conflict, weight_based_error]
+        severity:
+          type: string
+          enum: [informational, moderate, severe, contraindicated]
+        clinicalContext:
+          type: object
+          properties:
+            estimatedRenalFunction:
+              type: number
+              format: float
+            weightKilograms:
+              type: number
+              format: float
+            currentRegimenSummary:
+              type: string
+            relevantAllergies:
+              type: array
+              items:
+                type: string
+        assignedPharmacistId:
+          type: string
+        interventionOutcome:
+          type: string
+          enum: [dose_changed, drug_changed, monitoring_added, no_change_clinically_appropriate, prescriber_declined, pending]
+        attributedToMemberId:
+          type: string
+        raisedAt:
+          type: string
+          format: date-time
+    DocumentationAttestationCreate:
+      type: object
+      required: [dispositionId, memberId, statement]
+      properties:
+        dispositionId:
+          type: string
+        memberId:
+          type: string
+        statement:
+          type: string
+          enum: [personally_reviewed_and_edited, personally_reviewed_no_changes, reviewed_by_supervisee_and_countersigned]
+        billingLevelClaimed:
+          type: string
+        supervisingMemberId:
+          type: string
+    DocumentationAttestation:
+      type: object
+      required: [id, dispositionId, memberId, statement, reviewEvidence]
+      properties:
+        id:
+          type: string
+        dispositionId:
+          type: string
+        memberId:
+          type: string
+        statement:
+          type: string
+        reviewEvidence:
+          type: object
+          properties:
+            draftOpened:
+              type: boolean
+            secondsOpen:
+              type: integer
+            scrolledToEnd:
+              type: boolean
+            editsMade:
+              type: boolean
+        machineDraftedProportion:
+          type: number
+          format: float
+        clinicianAuthoredProportion:
+          type: number
+          format: float
+        billingLevelClaimed:
+          type: string
+        billingLevelSupported:
+          type: boolean
+        attestedAt:
+          type: string
+          format: date-time
+    EscalationHandoffCreate:
+      type: object
+      required: [toMemberId, reason]
+      properties:
+        toMemberId:
+          type: string
+        reason:
+          type: string
+          enum: [outside_my_scope, clinical_uncertainty, patient_deterioration_suspected, needs_prescriber, needs_pharmacist, needs_attending]
+        note:
+          type: string
+        dueWithinMinutes:
+          type: integer
+    EscalationHandoff:
+      type: object
+      required: [id, fromMemberId, toMemberId, status, raisedAt]
+      properties:
+        id:
+          type: string
+        dispositionId:
+          type: string
+        draftId:
+          type: string
+        fromMemberId:
+          type: string
+        toMemberId:
+          type: string
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [assigned, claimed, answered, unclaimed_breach, reassigned]
+        raisedAt:
+          type: string
+          format: date-time
+        dueBy:
+          type: string
+          format: date-time
+        claimedAt:
+          type: string
+          format: date-time
+        answeredAt:
+          type: string
+          format: date-time
+        breached:
+          type: boolean
+    TimeReturnedLedgerEntry:
+      type: object
+      required: [period, role, minutesReturned]
+      properties:
+        period:
+          type: string
+        role:
+          $ref: "#/components/schemas/CareRole"
+        unitId:
+          type: string
+        dispositionCount:
+          type: integer
+        minutesReturned:
+          type: integer
+        minutesAddedByTransfersIn:
+          type: integer
+        minutesRemovedByTransfersOut:
+          type: integer
+        netMinutesReturned:
+          type: integer
+        scheduledMinutes:
+          type: integer
+        payrollReconciled:
+          type: boolean
+        percentOfWorkTimeReturned:
+          type: number
+          format: float
+        benchmarkPercentFromSource:
+          type: number
+          format: float
+          description: Source benchmark for this role, 17 percent for physicians and 51 percent for registered nurses
+        convertedToDirectCareMinutes:
+          type: integer
+        afterHoursRecordMinutesReduced:
+          type: integer
+        unaccountedMinutes:
+          type: integer
+        signedOffBy:
+          type: string
+    SafetySurveillanceRecord:
+      type: object
+      required: [id, origin, status, openedAt]
+      properties:
+        id:
+          type: string
+        origin:
+          type: string
+          enum: [unsafe_rejection, harm_event, override_threshold_breach, queue_age_breach, signature_bypass_attempt]
+        producerId:
+          type: string
+        modelVersionLabel:
+          type: string
+        draftType:
+          $ref: "#/components/schemas/DraftType"
+        draftId:
+          type: string
+        dispositionId:
+          type: string
+        reason:
+          type: string
+        narrative:
+          type: string
+        status:
+          type: string
+          enum: [open, under_review, actioned, closed]
+        openedAt:
+          type: string
+          format: date-time
+        ownerId:
+          type: string
+        reviewDueBy:
+          type: string
+          format: date-time
+        harmLevel:
+          type: string
+          enum: [no_harm, near_miss, temporary_harm, permanent_harm, death]
+        linkStrength:
+          type: string
+          enum: [suspected, plausible, probable, confirmed, ruled_out]
+        safetyEventRef:
+          type: string
+        externallyReportable:
+          type: boolean
+        reportedAt:
+          type: string
+          format: date-time
+        actionTaken:
+          type: string
+          enum: [draft_type_suppressed, rule_tightened, threshold_changed, producer_version_rolled_back, no_change, referred_to_governance]
+        packageContents:
+          type: object
+          properties:
+            dispositionCount:
+              type: integer
+            unsafeRejectionCount:
+              type: integer
+            harmEventCount:
+              type: integer
+            periodCovered:
+              type: string
+    DataEnvelopeCareTeamMember:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CareTeamMember"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeScopeCredential:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ScopeCredential"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeWorkSession:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/WorkSession"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeProducerRegistration:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProducerRegistration"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeDraftArtifact:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DraftArtifact"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeCoSignatureRule:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CoSignatureRule"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeOverrideThreshold:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/OverrideThreshold"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeInterruptionBudget:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/InterruptionBudget"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeDispositionRecord:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DispositionRecord"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeEditDelta:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/EditDelta"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeOrderProposal:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/OrderProposal"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeDoseCheckFinding:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DoseCheckFinding"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeDocumentationAttestation:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DocumentationAttestation"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeEscalationHandoff:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/EscalationHandoff"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeTimeReturnedLedgerEntry:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TimeReturnedLedgerEntry"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    DataEnvelopeSafetySurveillanceRecord:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SafetySurveillanceRecord"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeCareTeamMember:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/CareTeamMember"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeProducerRegistration:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProducerRegistration"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeDraftArtifact:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DraftArtifact"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeDispositionRecord:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DispositionRecord"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeCoSignatureRule:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/CoSignatureRule"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeDoseCheckFinding:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoseCheckFinding"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeTimeReturnedLedgerEntry:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/TimeReturnedLedgerEntry"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+    ListEnvelopeSafetySurveillanceRecord:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/SafetySurveillanceRecord"
+            nextCursor:
+              type: string
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
